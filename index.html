@@ -167,7 +167,7 @@ h2{font-size:18px;font-weight:600;margin:0}
 .stack{display:flex;flex-direction:column;gap:18px}
 .daynav{display:flex;align-items:center;gap:6px}
 .daynav>button{width:44px;height:44px;border-radius:12px;background:#EADFD2;font-size:20px;font-weight:600}
-.daynav .lbl{min-width:200px;text-align:center;font-weight:600}
+.daynav .lbl{min-width:170px;text-align:center;font-weight:600}
 .ledger{font-size:16px}
 .lrow{display:flex;justify-content:space-between;padding:6px 0;gap:10px}
 .lrow.minus{color:var(--muted)}
@@ -584,42 +584,74 @@ function barsSVG(vals,labels,{h=140,color='#6B3A22',hi=-1,fmt=peso}={}){
   ${vals.map((v,i)=>{const hh=Math.abs(v)*sc;return `<rect x="${i*bw+bw*.18}" y="${v>=0?mid-hh:mid}" width="${bw*.64}" height="${v?Math.max(2,hh):0}" rx="3" fill="${v<0?'#D2493E':i===hi?'#B9814E':color}"><title>${labels[i]}: ${fmt(v)}</title></rect>`}).join('')}
   ${labels.map((l,i)=>l?`<text x="${i*bw+bw/2}" y="${h+14}" font-size="11" text-anchor="middle" fill="#7D6A5C">${l}</text>`:'').join('')}</svg>`}
 
+/* ---- Money: day / week / month ---- */
+const monthStart=k=>k.slice(0,8)+'01';
+const addMonths=(k,n)=>{const d=keyToDate(monthStart(k));d.setMonth(d.getMonth()+n);return dayKey(d)};
+function periodRange(p,anchor){
+  if(p==='day')return {from:anchor,to:anchor};
+  if(p==='week'){const f=weekStart(anchor);return {from:f,to:shiftKey(f,6)}}
+  const f=monthStart(anchor);return {from:f,to:shiftKey(addMonths(f,1),-1)}}
+function periodStats(keys){
+  const ds=keys.map(k=>dayStats(k,k===today()&&!!openShift())),t={days:ds};
+  for(const f of ['sales','ingredients','freeCost','wasteCost','other','staff','overhead','profit','cups','restockCash'])t[f]=sum(ds.map(d=>d[f]));
+  t.paidN=sum(ds.map(d=>d.paid.length));t.freeN=sum(ds.map(d=>d.free.length));t.wasteN=sum(ds.map(d=>d.ws.length));
+  t.pay={cash:0,gcash:0,maya:0};ds.forEach(d=>{for(const k in d.pay)t.pay[k]+=d.pay[k]});
+  t.per={};ds.forEach(d=>{for(const id in d.per){const p=d.per[id],q=t.per[id]||(t.per[id]={name:p.name,qty:0,sales:0,cost:0});q.qty+=p.qty;q.sales+=p.sales;q.cost+=p.cost}});
+  t.ex=ds.flatMap(d=>d.ex);t.refs=ds.flatMap(d=>d.refs);
+  t.sellDays=ds.filter(d=>idx().work.has(d.k)).length;
+  t.best=ds.filter(d=>d.sales>0).sort((a,b)=>b.sales-a.sales)[0]||null;
+  return t}
 function renderMoney(){
-  const k=ui.moneyDay||today(),isToday=k===today(),d=dayStats(k,isToday&&!!openShift()),t=totals(),ec=estCounts();
-  const label=isToday?'Today':fmtDay(k,{weekday:'long',month:'short',day:'numeric'});
+  const P=ui.period||'day',anchor=ui.moneyDay||today(),{from,to}=periodRange(P,anchor);
+  const allKeys=daysFrom(from,to),keys=allKeys.filter(k=>k<=today()),isCur=to>=today();
+  const d=periodStats(keys),t=totals(),ec=estCounts();
+  const prevAnchor=P==='day'?shiftKey(from,-1):P==='week'?shiftKey(from,-7):addMonths(from,-1),pr=periodRange(P,prevAnchor),prev=periodStats(daysFrom(pr.from,pr.to));
+  const label=P==='day'?(isCur?'Today':fmtDay(from,{weekday:'long',month:'short',day:'numeric'}))
+    :P==='week'?(isCur?'This week':'Week of '+fmtDay(from,{month:'short',day:'numeric'}))
+    :(isCur?'This month':keyToDate(from).toLocaleDateString('en-PH',{month:'long',year:'numeric'}));
+  const prevName=P==='day'?'the day before':P==='week'?'last week':'last month';
+  const change=prev.sales>0?Math.round((d.sales-prev.sales)/prev.sales*100):null;
   const backupAge=state.lastBackup?Math.floor((Date.now()-state.lastBackup)/864e5):null;
-  const shifts=state.shifts.filter(s=>s.day===k);
   const per=Object.values(d.per).sort((a,b)=>b.qty-a.qty);
+  const shifts=state.shifts.filter(s=>s.day>=from&&s.day<=to);
+  const closed=shifts.filter(s=>s.closeTs),cashDiff=sum(closed.map(s=>s.counted-s.expected));
   // insights: last 30 days
-  const from=shiftKey(today(),-29),recent=liveOrders().filter(o=>dayKey(o.ts)>=from&&o.pay!=='free');
-  const sellDays=new Set(recent.map(o=>dayKey(o.ts))).size||1,hrs=[...Array(15)].map((_,i)=>i+7);
-  const byHour=hrs.map(h=>recent.filter(o=>new Date(o.ts).getHours()===h).length/sellDays);
+  const f30=shiftKey(today(),-29),recent=liveOrders().filter(o=>dayKey(o.ts)>=f30&&o.pay!=='free');
+  const sd30=new Set(recent.map(o=>dayKey(o.ts))).size||1,hrs=[...Array(15)].map((_,i)=>i+7);
+  const byHour=hrs.map(h=>recent.filter(o=>new Date(o.ts).getHours()===h).length/sd30);
   const wdNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],wdSales=wdNames.map(()=>[]);
   [...new Set(recent.map(o=>dayKey(o.ts)))].forEach(dk=>{wdSales[(keyToDate(dk).getDay()+6)%7].push(dayStats(dk).sales)});
-  const wdAvg=wdSales.map(a=>a.length?sum(a)/a.length:0);
-  const bestH=byHour.indexOf(Math.max(...byHour)),bestW=wdAvg.indexOf(Math.max(...wdAvg));
+  const wdAvg=wdSales.map(a=>a.length?sum(a)/a.length:0),bestH=byHour.indexOf(Math.max(...byHour)),bestW=wdAvg.indexOf(Math.max(...wdAvg));
+  // expenses by category for week/month
+  const exCat={};d.ex.forEach(e=>exCat[e.cat]=(exCat[e.cat]||0)+e.amount);
+  const dailySales=allKeys.map(k=>k<=today()?dayStats(k).sales:0),bestIdx=d.best?allKeys.indexOf(d.best.k):-1;
+  const dayLabels=allKeys.map((k,i)=>P==='week'?wdNames[i]:(i===0||(i+1)%5===0)?String(keyToDate(k).getDate()):'');
   $('#v-money').innerHTML=`
   <div class="head"><h1>Money</h1>
-    <div class="daynav"><button data-act="day" data-n="-1" aria-label="Previous day">‹</button><div class="lbl">${esc(label)}</div>
-    <button data-act="day" data-n="1" aria-label="Next day" ${isToday?'disabled style="opacity:.35"':''}>›</button>${isToday?'':'<button class="btn ghost sm" data-act="day" data-n="0">Today</button>'}</div></div>
+    <div class="row" style="gap:12px">
+      <div class="seg" role="group" aria-label="Period">${[['day','Day'],['week','Week'],['month','Month']].map(([k,l])=>`<button data-act="period" data-p="${k}" aria-pressed="${P===k}">${l}</button>`).join('')}</div>
+      <div class="daynav"><button data-act="day" data-n="-1" aria-label="Previous">‹</button><div class="lbl">${esc(label)}</div>
+      <button data-act="day" data-n="1" aria-label="Next" ${isCur?'disabled style="opacity:.35"':''}>›</button>${isCur?'':'<button class="btn ghost sm" data-act="day" data-n="0">Now</button>'}</div></div></div>
   ${(ec.noPrice||ec.menu)?`<div class="banner"><span>Costs are estimates for now: ${ec.noPrice?ec.noPrice+' supplies have no price yet':''}${ec.noPrice&&ec.menu?' and ':''}${ec.menu?ec.menu+' drink recipes are still guesses':''}.</span><button class="btn sm line" data-act="go" data-v="setup">Fix in Setup</button></div>`:''}
   ${liveOrders().length&&(backupAge===null||backupAge>=1)&&!state.cloud.url?`<div class="banner"><span>${backupAge===null?'You haven\'t backed up yet.':'Last backup was '+backupAge+' day'+(backupAge===1?'':'s')+' ago.'} Everything lives on this iPad only.</span><button class="btn sm line" data-act="export">Back up now</button></div>`:''}
   <div class="two">
     <div class="stack">
-      <div class="card"><h2 style="margin-bottom:10px">${isToday?'Today so far':'That day'}</h2>
+      <div class="card"><h2 style="margin-bottom:4px">${P==='day'?(isCur?'Today so far':'That day'):isCur?label+' so far':label}</h2>
+        <div class="muted" style="font-size:13px;margin-bottom:8px">${prev.sales>0?`${peso(prev.sales,0)} in sales ${prevName}${change!==null&&!isCur?`, ${change>=0?'up':'down'} ${Math.abs(change)}%`:''}${isCur&&P!=='day'?' (full period)':''}`:`No sales ${prevName}`}</div>
         <div class="ledger">
-          <div class="lrow"><span>Sales<span class="sub">${d.paid.length} orders, ${d.cups} drinks</span></span><span>${peso(d.sales)}</span></div>
+          <div class="lrow"><span>Sales<span class="sub">${d.paidN} orders, ${d.cups} drinks${P!=='day'?`, ${d.sellDays} day${d.sellDays===1?'':'s'} open`:''}</span></span><span>${peso(d.sales)}</span></div>
           <div class="lrow minus"><span>Ingredients used</span><span>− ${peso(d.ingredients,0)}</span></div>
-          ${d.freeCost+d.wasteCost?`<div class="lrow minus"><span>Free drinks and waste<span class="sub">${d.free.length} free, ${d.ws.length} waste logged</span></span><span>− ${peso(d.freeCost+d.wasteCost,0)}</span></div>`:''}
+          ${d.freeCost+d.wasteCost?`<div class="lrow minus"><span>Free drinks and waste<span class="sub">${d.freeN} free, ${d.wasteN} waste logged</span></span><span>− ${peso(d.freeCost+d.wasteCost,0)}</span></div>`:''}
           <div class="lrow minus"><span>Other expenses</span><span>− ${peso(d.other)}</span></div>
           <div class="lrow minus"><span>Staff pay</span><span>− ${peso(d.staff,0)}</span></div>
-          <div class="lrow minus"><span>Rent and bills<span class="sub">Daily share of monthly costs</span></span><span>− ${peso(d.overhead,0)}</span></div>
+          <div class="lrow minus"><span>Rent and bills<span class="sub">${P==='day'?'Daily share of monthly costs':'Share of monthly costs for these days'}</span></span><span>− ${peso(d.overhead,0)}</span></div>
           <div class="lrule"></div>
           <div class="lrow total ${d.profit<0?'neg':''}"><span>Profit</span><span>${peso(d.profit,0)}</span></div>
         </div>
-        <div class="paysplit"><div><span>Cash</span><b>${peso(d.pay.cash)}</b></div><div><span>GCash</span><b>${peso(d.pay.gcash)}</b></div><div><span>Maya</span><b>${peso(d.pay.maya)}</b></div><div><span>Free</span><b>${d.free.length}</b></div></div>
+        <div class="paysplit"><div><span>Cash</span><b>${peso(d.pay.cash)}</b></div><div><span>GCash</span><b>${peso(d.pay.gcash)}</b></div><div><span>Maya</span><b>${peso(d.pay.maya)}</b></div><div><span>Free</span><b>${d.freeN}</b></div></div>
         ${d.restockCash?`<div class="note">You also paid ${peso(d.restockCash)} from the drawer to restock. That's not subtracted here: ingredients are counted as drinks use them.</div>`:''}
       </div>
+      ${P==='day'?`
       <div class="card"><h2>Shifts and cash count</h2>
         ${shifts.length?`<table class="tbl" style="margin-top:6px"><thead><tr><th>Shift</th><th class="r">Should have</th><th class="r">Counted</th><th class="r">Difference</th></tr></thead><tbody>
           ${shifts.map(s=>{const exp=s.closeTs?s.expected:shiftCash(s).expected,df=s.closeTs?s.counted-s.expected:null;
@@ -636,21 +668,30 @@ function renderMoney(){
           <label class="check" style="grid-column:1/-1"><input type="checkbox" name="drawer" checked> Paid from the cash drawer</label></form>
         ${d.ex.length?`<table class="tbl">${d.ex.map(e=>`<tr><td><div class="nm">${esc(e.cat)}</div><div class="sub">${[e.note,e.drawer?'from drawer':''].filter(Boolean).map(esc).join(', ')}</div></td><td class="r">${peso(e.amount)}</td><td class="r" style="width:44px"><button class="xbtn" data-act="delexp" data-id="${e.id}" aria-label="Remove expense">×</button></td></tr>`).join('')}</table>`
           :'<div class="muted" style="font-size:14px">Ice, gas, repairs and similar. Staff pay and rent are added automatically from Setup → Running costs.</div>'}
-      </div>
+      </div>`:`
+      <div class="card"><h2>Expenses by category</h2>
+        ${Object.keys(exCat).length?`<table class="tbl" style="margin-top:6px">${Object.entries(exCat).sort((a,b)=>b[1]-a[1]).map(([c,v])=>`<tr><td class="nm">${esc(c)}</td><td class="r">${peso(v)}</td></tr>`).join('')}
+          <tr><td class="nm">Staff pay</td><td class="r">${peso(d.staff,0)}</td></tr><tr><td class="nm">Rent and bills</td><td class="r">${peso(d.overhead,0)}</td></tr></table>`
+          :`<table class="tbl" style="margin-top:6px"><tr><td class="nm">Staff pay</td><td class="r">${peso(d.staff,0)}</td></tr><tr><td class="nm">Rent and bills</td><td class="r">${peso(d.overhead,0)}</td></tr></table>`}
+        <p class="note">To add an expense, switch to Day and pick the date.</p></div>
+      <div class="card"><h2>Cash counts</h2>
+        <div class="muted" style="font-size:14px;margin-top:6px">${closed.length?`${closed.length} shift${closed.length===1?'':'s'} closed. ${Math.abs(cashDiff)<1?'All counts matched overall.':`Overall the drawer was <b style="color:${cashDiff<0?'var(--bad)':'var(--warn)'}">${cashDiff<0?'short':'over'} by ${peso(Math.abs(cashDiff))}</b>.`}${closed.filter(s=>Math.abs(s.counted-s.expected)>=1).length?` ${closed.filter(s=>Math.abs(s.counted-s.expected)>=1).length} shift${closed.filter(s=>Math.abs(s.counted-s.expected)>=1).length===1?' didn\'t':'s didn\'t'} match.`:''}`:'No closed shifts in this period.'}</div></div>`}
     </div>
     <div class="stack">
-      <div class="card"><div class="row between"><h2>Payback</h2><button class="btn line sm" data-act="go" data-v="payback">Open Payback</button></div>
+      ${P==='day'?`<div class="card"><div class="row between"><h2>Payback</h2><button class="btn line sm" data-act="go" data-v="payback">Open Payback</button></div>
         <div class="big" style="margin-top:10px">${peso(t.deposited,0)} <small>of ${peso(t.goal,0)} goal deposited</small></div>
         <div class="progress"><i style="width:${Math.min(100,t.goal?t.deposited/t.goal*100:0)}%"></i></div>
-        <div class="note" style="color:var(--espresso);font-size:14px">Profit after all costs since opening: <b>${peso(t.profit,0)}</b>. ${t.avg>0?`This week you're averaging <b>${peso(t.avg,0)}</b> per selling day.`:''}</div>
-      </div>
-      <div class="card"><h2 style="margin-bottom:6px">${d.refs.length?'GCash and Maya to check':'What sold'}</h2>
-        ${d.refs.length?`<p class="muted" style="font-size:13px;margin:0 0 6px">Match these against your wallet history.</p><table class="tbl">${d.refs.map(o=>`<tr><td class="nm">#${o.num} ${PAY[o.pay]}</td><td>Ref ${esc(o.ref||'—')}</td><td class="sub">${fmtTime(o.ts)}</td><td class="r">${peso(o.total)}</td></tr>`).join('')}</table><h2 style="margin:18px 0 6px">What sold</h2>`:''}
+        <div class="note" style="color:var(--espresso);font-size:14px">Profit after all costs since opening: <b>${peso(t.profit,0)}</b>. ${t.avg>0?`This week you're averaging <b>${peso(t.avg,0)}</b> per selling day.`:''}</div></div>`
+      :`<div class="card"><h2>Sales by day</h2>
+        <p class="muted" style="font-size:13px;margin:2px 0 10px">${d.sellDays?`Average <b>${peso(d.sales/d.sellDays,0)}</b> per day open.${d.best?` Best day: <b>${fmtDay(d.best.k)}</b> with ${peso(d.best.sales,0)}.`:''}`:'No sales yet in this period.'}</p>
+        <div class="chart">${barsSVG(dailySales,dayLabels,{h:130,hi:bestIdx})}</div></div>`}
+      <div class="card"><h2 style="margin-bottom:6px">${P==='day'&&d.refs.length?'GCash and Maya to check':'What sold'}</h2>
+        ${P==='day'&&d.refs.length?`<p class="muted" style="font-size:13px;margin:0 0 6px">Match these against your wallet history.</p><table class="tbl">${d.refs.map(o=>`<tr><td class="nm">#${o.num} ${PAY[o.pay]}</td><td>Ref ${esc(o.ref||'—')}</td><td class="sub">${fmtTime(o.ts)}</td><td class="r">${peso(o.total)}</td></tr>`).join('')}</table><h2 style="margin:18px 0 6px">What sold</h2>`:''}
         ${per.length?`<table class="tbl"><thead><tr><th>Drink</th><th class="r">Sold</th><th class="r">Sales</th><th class="r">Profit / cup</th></tr></thead><tbody>
         ${per.map(p=>`<tr><td class="nm">${esc(p.name)}</td><td class="r">${p.qty}</td><td class="r">${peso(p.sales)}</td><td class="r">${peso((p.sales-p.cost)/p.qty,0)}</td></tr>`).join('')}</tbody></table>`
-        :'<div class="muted" style="font-size:14px">No sales on this day.</div>'}
+        :'<div class="muted" style="font-size:14px">No sales in this period.</div>'}
       </div>
-      <div class="card"><h2>When you're busiest</h2><p class="muted" style="font-size:13px;margin:2px 0 10px">Last 30 days, ${sellDays} selling day${sellDays===1?'':'s'}.${recent.length?` Busiest around <b>${(hrs[bestH]%12)||12}${hrs[bestH]<12?'am':'pm'}</b>, best day <b>${wdNames[bestW]}</b>.`:''}</p>
+      <div class="card"><h2>When you're busiest</h2><p class="muted" style="font-size:13px;margin:2px 0 10px">Last 30 days, ${sd30} selling day${sd30===1?'':'s'}.${recent.length?` Busiest around <b>${(hrs[bestH]%12)||12}${hrs[bestH]<12?'am':'pm'}</b>, best day <b>${wdNames[bestW]}</b>.`:''}</p>
         <div class="muted" style="font-size:13px">Orders per hour</div>
         <div class="chart">${barsSVG(byHour,hrs.map((h,i)=>i%2?'':((h%12)||12)+(h<12?'a':'p')),{h:110,hi:bestH,fmt:v=>v.toFixed(1)+' orders'})}</div>
         <div class="muted" style="font-size:13px;margin-top:10px">Average sales by day of week</div>
@@ -1010,7 +1051,10 @@ const acts={
     s.stock=Math.max(0,s.stock)+packs*s.packSize;if(price>0)s.packPrice=price;
     state.restocks.push({id:uid(),ts:Date.now(),s:s.id,packs,price,drawer:$('#r-drawer').checked});save();closeModal();toast(`Added ${packs} pack${packs===1?'':'s'} of ${s.name}.`);render()},
   savecount:()=>{draft.stock=+$('#c-units').value||0;save();closeModal();toast(`${draft.name} count saved.`);render()},
-  day:d=>{const n=+d.n;ui.moneyDay=n===0?null:shiftKey(ui.moneyDay||today(),n);if(ui.moneyDay&&ui.moneyDay>=today())ui.moneyDay=null;render()},
+  day:d=>{const n=+d.n,P=ui.period||'day',a=ui.moneyDay||today();
+    ui.moneyDay=n===0?null:P==='day'?shiftKey(a,n):P==='week'?shiftKey(weekStart(a),7*n):addMonths(a,n);
+    if(ui.moneyDay&&periodRange(P,ui.moneyDay).to>=today())ui.moneyDay=null;render()},
+  period:d=>{ui.period=d.p;ui.moneyDay=null;render()},
   week:d=>{const n=+d.n;ui.week=shiftKey(ui.week||weekStart(today()),n);if(ui.week>=weekStart(today()))ui.week=null;render()},
   delexp:d=>{state.expenses=state.expenses.filter(e=>e.id!==d.id);save();render()},
   stab:d=>{ui.setupTab=d.t;render()},
